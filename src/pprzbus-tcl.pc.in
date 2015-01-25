@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: pprzbus-tcl
+Description: A software bus (TCL main loop)
+Version: @MAJOR@.@MINOR@
+Libs: -L${libdir} -ltclpprzbus
+Libs.private: @PCRELIB@ @EXTRALIB@
+Cflags: -I${includedir}
