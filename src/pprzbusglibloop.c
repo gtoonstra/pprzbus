@@ -25,10 +25,16 @@
 #include <signal.h>
 #endif
 
+#include <hiredis/hiredis.h>
+#include <hiredis/async.h>
+#include "glib_adapter.h"
+
 #include <glib.h>
 #include "pprzbusdebug.h"
 #include "pprzbuschannel.h"
 #include "pprzbusglibloop.h"
+
+redisAsyncContext *ac;
 
 struct _channel {
 	guint id_read;
@@ -43,7 +49,6 @@ struct _channel {
 
 static int channel_initialized = 0;
 
-
 static gboolean IvyGlibHandleChannelRead(GIOChannel *source,
 					 GIOCondition condition,
 					 gpointer data);
@@ -56,6 +61,24 @@ static gboolean IvyGlibHandleChannelWrite(GIOChannel *source,
 					  GIOCondition condition,
 					  gpointer data);
 
+static void connect_cb (const redisAsyncContext *raContext, int status)
+{
+    if (status != REDIS_OK) {
+        printf("Failed to connect: %s\n", raContext->errstr);
+    } else {
+        printf("Connected...\n");
+    }
+}
+
+static void disconnect_cb (const redisAsyncContext *raContext, int status)
+{
+    if (status != REDIS_OK) {
+        printf("Failed to disconnect: %s", raContext->errstr);
+    } else {
+        printf("Disconnected...\n");
+    }
+}
+
 void IvyChannelInit(void) {
   if ( channel_initialized ) return;
   /* fixes bug when another app coredumps */
@@ -63,8 +86,20 @@ void IvyChannelInit(void) {
   signal( SIGPIPE, SIG_IGN);
 #endif
   channel_initialized = 1;
-}
 
+    printf( "IvyChannelInit\n" );
+
+    GMainContext *context = NULL;
+    GSource *source;
+    ac = redisAsyncConnect("127.0.0.1", 6379);
+    if (ac->err) {
+        g_printerr("%s\n", ac->errstr);
+    }
+    source = redis_source_new(ac);
+    g_source_attach(source, context);
+    redisAsyncSetConnectCallback(ac, connect_cb);
+    redisAsyncSetDisconnectCallback(ac, disconnect_cb);
+}
 
 
 Channel IvyChannelAdd(IVY_HANDLE fd, void *data,
@@ -74,6 +109,8 @@ Channel IvyChannelAdd(IVY_HANDLE fd, void *data,
 		      ) {
   Channel channel;
   channel = (Channel)g_new(struct _channel, 1);
+
+  printf( "IvyChannelAdd\n" );
 
   channel->handle_delete = handle_delete;
   channel->handle_read = handle_read;
@@ -144,5 +181,6 @@ void
 IvyChannelStop ()
 {
   /* To be implemented */
+    redisAsyncFree( ac );
 }
 

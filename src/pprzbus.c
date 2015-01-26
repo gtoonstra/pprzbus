@@ -48,6 +48,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include <fcntl.h>
 
 #include <hiredis/hiredis.h>
+#include <hiredis/async.h>
 
 #include "version.h"
 #include "pprzbuschannel.h"
@@ -157,11 +158,31 @@ static IvyPongCallback application_pong_callback = NULL;
 /* liste des messages a recevoir */
 static MsgRcvPtr msg_recv = NULL;
 
-static redisContext *rContext;
+extern redisAsyncContext *ac;
 
 static const char *ready_message = NULL;
 
 #define MAXPORT(a,b)      ((a>b) ? a : b)
+
+void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
+    redisReply *r = reply;
+    int j;
+
+    if (reply == NULL) return;
+
+    if (r->type == REDIS_REPLY_ARRAY) {
+        for (j = 0; j < r->elements; j++) {
+            printf("%u) %s\n", j, r->element[j]->str);
+        }
+    }
+}
+
+void onPublish(redisAsyncContext *c, void *reply, void *privdata) {
+    redisReply *r = reply;
+    int j;
+
+    if (reply == NULL) return;
+}
 
 void IvyInit (const char *appname, const char *ready, 
 			 IvyApplicationCallback callback, void *data,
@@ -178,6 +199,7 @@ void IvyInit (const char *appname, const char *ready,
 		ready_message = strdup(ready);
 
     // GT: Initialization goes here, but for redis that's done in IvyStart.
+	IvyChannelInit();
 
 	if ( getenv( "IVY_DEBUG_BINARY" )) debug_binary_msg = 1;
 }
@@ -192,7 +214,7 @@ void IvyTerminate()
     
     // GT: Add termination code here..
      /* Disconnects and frees the context */
-    redisFree(rContext);
+
 }
 
 void IvySetBindCallback( IvyBindCallback bind_callback, void *bind_data )
@@ -274,21 +296,7 @@ void IvyStart (const char* bus)
 
     // ---- specific code ----
     // GT: Initialize pprzbus here...
-    struct timeval timeout = { 1, 500000 }; // 1.5 seconds
-    rContext = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
-    if (rContext == NULL || rContext->err) {
-        if (rContext) {
-            printf("Connection error: %s\n", rContext->errstr);
-            redisFree(rContext);
-        } else {
-            printf("Connection error: can't allocate redis context\n");
-        }
-        exit(1);
-    }
-
-    redisReply *reply = redisCommand(rContext,"PING");
-    printf("PING: %s\n", reply->str);
-    freeReplyObject(reply);
+    // initialization is done in each *loop.c file.
 }
 
 /* desabonnements */
@@ -310,6 +318,7 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 	va_list ap;
 	static int recv_id = 0;
 	MsgRcvPtr msg;
+    char *token, *saveptr;
 
 	va_start (ap, fmt_regex );
 	buffer.offset = 0;
@@ -324,7 +333,16 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 		msg->user_data = user_data;
 	IVY_LIST_ADD_END( msg_recv, msg )
 
-    // GT: bind msg.
+    printf( "buffer.data = %s\n", buffer.data );
+
+    token = strtok_r(buffer.data, " ", &saveptr);
+    token = strtok_r(NULL, " ", &saveptr);
+    if ( token != NULL ) {
+        printf( "Subscribing to %s\n", token );
+
+        // GT: bind msg.    
+        redisAsyncCommand(ac, onMessage, callback, "SUBSCRIBE %s", token );
+    }
 
 	return msg;
 }
@@ -366,8 +384,10 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   make_message( &buffer, fmt, ap );
   va_end ( ap );
 
+  printf( "PUBLISHing buffer.data = %s\n", buffer.data );
+
   // GT: Send msg
-  
+  redisAsyncCommand(ac, onPublish, NULL, "PUBLISH %s", buffer.data );
 
   return match_count;
 }

@@ -35,6 +35,9 @@
 #include <signal.h>
 #endif
 
+#include <hiredis/hiredis.h>
+#include <hiredis/async.h>
+
 #include "pprzbuschannel.h"
 #include "pprzbusloop.h"
 #include "timer.h"
@@ -70,6 +73,8 @@ static void *AfterSelectData = NULL;
 #ifdef WIN32
 WSADATA WsaData;
 #endif
+
+redisAsyncContext *ac;
 
 void
 IvyChannelRemove (Channel channel)

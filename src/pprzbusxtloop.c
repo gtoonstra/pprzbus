@@ -39,6 +39,9 @@
 
 #include <X11/Intrinsic.h>
 
+#include <hiredis/hiredis.h>
+#include <hiredis/async.h>
+
 #include "pprzbusdebug.h"
 #include "pprzbuschannel.h"
 #include "pprzbusxtloop.h"
