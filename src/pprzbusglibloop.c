@@ -66,8 +66,6 @@ static void connect_cb (const redisAsyncContext *raContext, int status)
 {
     if (status != REDIS_OK) {
         printf("Failed to connect: %s\n", raContext->errstr);
-    } else {
-        printf("Connected...\n");
     }
 }
 
@@ -75,8 +73,6 @@ static void disconnect_cb (const redisAsyncContext *raContext, int status)
 {
     if (status != REDIS_OK) {
         printf("Failed to disconnect: %s", raContext->errstr);
-    } else {
-        printf("Disconnected...\n");
     }
 }
 
@@ -87,8 +83,6 @@ void IvyChannelInit(void) {
   signal( SIGPIPE, SIG_IGN);
 #endif
   channel_initialized = 1;
-
-    printf( "IvyChannelInit\n" );
 
     GMainContext *context = NULL;
     GSource *source;
@@ -119,8 +113,6 @@ Channel IvyChannelAdd(IVY_HANDLE fd, void *data,
 		      ) {
   Channel channel;
   channel = (Channel)g_new(struct _channel, 1);
-
-  printf( "IvyChannelAdd\n" );
 
   channel->handle_delete = handle_delete;
   channel->handle_read = handle_read;

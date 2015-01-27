@@ -103,6 +103,7 @@ struct _msg_rcv {			/* requete d'emission d'un client */
 	MsgCallback callback;		/* callback a declancher a la reception */
 	void *user_data;		/* stokage d'info client */
     int groupcount;
+    int isolated;
     char *srcfilter;
 };
 
@@ -165,15 +166,19 @@ static const char *ready_message = NULL;
 
 #define MAXPORT(a,b)      ((a>b) ? a : b)
 
-static int extract_capitals( const char *data, char *token, int *groupsBeforeName ) 
+static int extract_capitals( const char *data, char *token, int *groupsBeforeName, int *isolated ) 
 {
     int i;
     int count = 0;
     int numseenbrackets = 0;
-    int counting = 0;
+    int brackets = 0;
+    int closed_at_least_one_group = 0;
+
+    *isolated = 0;
 
     for ( i = 0; i < strlen(data); i++ ) {
         if ( data[ i ] == '(' ) {
+            brackets++;
             if ( count > 0 ) {
                 numseenbrackets = -1;
             } else {
@@ -183,7 +188,16 @@ static int extract_capitals( const char *data, char *token, int *groupsBeforeNam
                 *groupsBeforeName = *groupsBeforeName + 1;
             }
         }
-        if ( (( isupper( data[ i ] )) || (data[i] == '_')) && (numseenbrackets > 0) ) {
+        if ( data[ i ] == ')' ) {
+            brackets--;
+            if ( brackets == 0 ) {
+                closed_at_least_one_group = 1;
+            }
+        }
+        if ( (( isupper( data[ i ] )) || (data[i] == '_')) && (numseenbrackets > 0) && ( closed_at_least_one_group == 1 ) ) {
+            if ( brackets == 0 ) {
+                *isolated = 1;
+            }
             token[count] = data[i];
             count++;
         }
@@ -242,37 +256,42 @@ void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
 
         // ivy wants procname (or id), then msgname and sometimes something in between
         argv[argc++] = procname;
-        argv[argc++] = procname;
-
-        strcpy( data, msgname );
-        strcat( data, " " );
-        strcat( data, r->element[3]->str+1);
-        data[strlen(data) - 1 ] = '\0';
-        trimwhitespace( data );
-
-        /*        
-        saveptr = NULL;
-        token = strtok_r( data, " ", &saveptr );
-        if ( token != NULL ) {
-            argv[argc++] = token;
-            while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
-                argv[argc++] = token;
-            }
-        }
-        */
 
         if ( privdata ) {
             MsgRcvPtr msg = (MsgRcvPtr)privdata;
-            argv[msg->groupcount-1] = data;
-            argc = msg->groupcount;
+            if ( msg->isolated == 1 ) {
+                strcpy( data, r->element[3]->str+1);
+                data[strlen(data) - 1 ] = '\0';
+                trimwhitespace( data );
 
-            // printf( "Returning '%s' for message '%s'\n", argv[argc-1], msgname );
-            if ( msg->srcfilter != NULL ) {
-                if ( strcasecmp( msg->srcfilter, procname ) == 0 ) {
+                saveptr = NULL;
+                token = strtok_r( data, " ", &saveptr );
+                if ( token != NULL ) {
+                    argv[argc++] = token;
+                    while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
+                        argv[argc++] = token;
+                    }
+                }
+
+                (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
+            } else {
+                argv[argc++] = procname;
+                strcpy( data, msgname );
+                strcat( data, " " );
+                strcat( data, r->element[3]->str+1);
+                data[strlen(data) - 1 ] = '\0';
+                trimwhitespace( data );
+
+                argv[msg->groupcount-1] = data;
+                argc = msg->groupcount;
+
+                if ( msg->srcfilter != NULL ) {
+                    if ( strcasecmp( msg->srcfilter, procname ) == 0 ) {
+                        (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
+                    }
+                } else {
                     (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
                 }
-            } else {
-                (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
             }
         }
     }
@@ -302,8 +321,6 @@ void IvyInit (const char *appname, const char *ready,
 	if ( appname )
 		ApplicationName = strdup(appname);
 
-    printf("I'm called %s\n", ApplicationName );
-
 	application_callback = callback;
 	application_user_data = data;
 	application_die_callback = die_callback;
@@ -319,7 +336,6 @@ void IvyInit (const char *appname, const char *ready,
 
 void IvyTerminate()
 {
-    printf( "IvyTerminate\n" );
 	if ( ApplicationName )
 	  free((void *) ApplicationName );
 	if ( ready_message )
@@ -332,7 +348,6 @@ void IvyTerminate()
 
 void IvySetBindCallback( IvyBindCallback bind_callback, void *bind_data )
 {
-    printf( "IvySetBindCallback\n" );
   application_bind_callback=bind_callback;
   application_bind_data=bind_data;
 }
@@ -360,12 +375,11 @@ void IvyAddFilter( const char *arg)
 }
 void IvyRemoveFilter( const char *arg)
 {
-    printf( "IvyRemoveFilter\n" );
+
 }
 
 void IvyStop (void)
 {
-    printf( "IvyStop\n" );
 	IvyChannelStop();
 }
 
@@ -376,8 +390,6 @@ void IvyStart (const char* bus)
 	const char* q;			/* used for decoding port number */
 	char addr[1024];	/* used for decoding addr */
 	unsigned short port=0;
-
-    printf( "IvyStart\n" );
 	
 	/*
 	 * Find network list as well as broadcast port
@@ -417,7 +429,7 @@ void
 IvyUnbindMsg (MsgRcvPtr msg)
 {
     // GT: Unbind from message here
-    printf( "IvyUnbindMsg\n" );
+    
 }
 
 /* demande de reception d'un message */
@@ -425,14 +437,13 @@ IvyUnbindMsg (MsgRcvPtr msg)
 MsgRcvPtr
 IvyBindMsg ( const char *srcFilter, MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 {
-    printf( "IvyBindMsg\n" );
-
 	static IvyBuffer buffer = { NULL, 0, 0};
 	va_list ap;
 	static int recv_id = 0;
 	MsgRcvPtr msg;
     char token[1024] = {"\0"};
     int groupCount = 0;
+    int isolated = 0;
 
 	va_start (ap, fmt_regex );
 	buffer.offset = 0;
@@ -451,13 +462,14 @@ IvyBindMsg ( const char *srcFilter, MsgCallback callback, void *user_data, const
         }
 	IVY_LIST_ADD_END( msg_recv, msg )
 
-    printf( "buffer.data = %s\n", buffer.data );
-
+    msg->isolated = 0;
     // ^([0-9]+\.[0-9]+ )?([^ ]*) +(NEW_AIRCRAFT( .*|$))
-    int count = extract_capitals( buffer.data, token, &groupCount );
+    int count = extract_capitals( buffer.data, token, &groupCount, &isolated );
     if ( count > 0 ) {
-        printf( "Pattern subscribing to %s, groupcount: %d\n", token, groupCount );
         msg->groupcount = groupCount;
+        msg->isolated = isolated;
+
+        printf( "IvyMsgBind: %s, %d, %d, %s\n", token, msg->groupcount, msg->isolated, buffer.data );
 
         // GT: bind msg.    
         redisAsyncCommand(sub_ac, onMessage, msg, "PSUBSCRIBE %s", token );
