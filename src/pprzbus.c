@@ -100,13 +100,11 @@ typedef struct _global_reg_lst	*GlobRegPtr;
 struct _msg_rcv {			/* requete d'emission d'un client */
 	MsgRcvPtr next;
 	int id;
-	char *regexp;		/* regexp du message a recevoir */
 	MsgCallback callback;		/* callback a declancher a la reception */
 	void *user_data;		/* stokage d'info client */
-    int secondfield;
+    int groupcount;
+    char *srcfilter;
 };
-
-
 
 /* liste de regexps source */
 struct _global_reg_lst {		/* liste des regexp source */
@@ -167,21 +165,25 @@ static const char *ready_message = NULL;
 
 #define MAXPORT(a,b)      ((a>b) ? a : b)
 
-static int extract_capitals( const char *data, char *token ) 
+static int extract_capitals( const char *data, char *token, int *groupsBeforeName ) 
 {
     int i;
     int count = 0;
     int numseenbrackets = 0;
+    int counting = 0;
 
     for ( i = 0; i < strlen(data); i++ ) {
-        if ( data[ i ] == '(' || data[ i ] == ')' ) {
+        if ( data[ i ] == '(' ) {
             if ( count > 0 ) {
                 numseenbrackets = -1;
             } else {
                 numseenbrackets++;
             }
+            if ( numseenbrackets != -1 ) {
+                *groupsBeforeName = *groupsBeforeName + 1;
+            }
         }
-        if ( (( isupper( data[ i ] )) || (data[i] == '_')) && (numseenbrackets > 1) ) {
+        if ( (( isupper( data[ i ] )) || (data[i] == '_')) && (numseenbrackets > 0) ) {
             token[count] = data[i];
             count++;
         }
@@ -216,11 +218,11 @@ void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
     int j;
 	int argc = 0;
 	char *argv[MAX_MATCHING_ARGS];
-    char channel[64] = {"\0"};
+    char channel[128] = {"\0"};
     char *procname, *msgname;
     char *saveptr;
     char *token;
-    char data[512] = {"\0"};
+    char data[1024] = {"\0"};
 
     if (reply == NULL) return;
 
@@ -261,14 +263,17 @@ void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
 
         if ( privdata ) {
             MsgRcvPtr msg = (MsgRcvPtr)privdata;
-            if ( msg->secondfield == 1 ) {
-                argv[argc++] = data;
-            } else {
-                argv[argc++] = data;
-            }
-            // printf( "Returning '%s' for message '%s'\n", argv[argc-1], msgname );
+            argv[msg->groupcount-1] = data;
+            argc = msg->groupcount;
 
-            (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
+            // printf( "Returning '%s' for message '%s'\n", argv[argc-1], msgname );
+            if ( msg->srcfilter != NULL ) {
+                if ( strcasecmp( msg->srcfilter, procname ) == 0 ) {
+                    (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
+                }
+            } else {
+                (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
+            }
         }
     }
 }
@@ -418,7 +423,7 @@ IvyUnbindMsg (MsgRcvPtr msg)
 /* demande de reception d'un message */
 
 MsgRcvPtr
-IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
+IvyBindMsg ( const char *srcFilter, MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 {
     printf( "IvyBindMsg\n" );
 
@@ -427,6 +432,7 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 	static int recv_id = 0;
 	MsgRcvPtr msg;
     char token[1024] = {"\0"};
+    int groupCount = 0;
 
 	va_start (ap, fmt_regex );
 	buffer.offset = 0;
@@ -436,25 +442,22 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 	/* add Msg to the query list */
 	IVY_LIST_ADD_START( msg_recv, msg )
 		msg->id = recv_id++;
-		msg->regexp = strdup(buffer.data);
 		msg->callback = callback;
 		msg->user_data = user_data;
-
-        if ( strstr( buffer.data, ")?([^ ]*) " ) != NULL ) {
-            // values at 2nd field
-            msg->secondfield = 1;
+        if (( srcFilter != NULL ) && ( strlen( srcFilter ) > 0 )) {
+            msg->srcfilter = strdup(srcFilter);
         } else {
-            msg->secondfield = 0;
+            msg->srcfilter = NULL;
         }
-
 	IVY_LIST_ADD_END( msg_recv, msg )
 
     printf( "buffer.data = %s\n", buffer.data );
 
     // ^([0-9]+\.[0-9]+ )?([^ ]*) +(NEW_AIRCRAFT( .*|$))
-    int count = extract_capitals( buffer.data, token );
+    int count = extract_capitals( buffer.data, token, &groupCount );
     if ( count > 0 ) {
-        printf( "Pattern subscribing to %s\n", token );
+        printf( "Pattern subscribing to %s, groupcount: %d\n", token, groupCount );
+        msg->groupcount = groupCount;
 
         // GT: bind msg.    
         redisAsyncCommand(sub_ac, onMessage, msg, "PSUBSCRIBE %s", token );
@@ -462,28 +465,6 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 
 	return msg;
 }
-
-/* changement de regexp d'un bind existant precedement fait avec IvyBindMsg */
-MsgRcvPtr
-IvyChangeMsg (MsgRcvPtr msg, const char *fmt_regex, ... )
-{
-	static IvyBuffer buffer = { NULL, 0, 0};
-	va_list ap;
-
-	va_start (ap, fmt_regex );
-	buffer.offset = 0;
-	make_message( &buffer, fmt_regex, ap );
-	va_end  (ap );
-
-	/* change Msg in the query list */
-    free (msg->regexp);
-	msg->regexp = strdup(buffer.data);
-
-    // GT: Update msg bind 	
-
-	return msg;
-}
-
 
 
 int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
@@ -495,8 +476,8 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   char *procname = NULL;
   char *msgname = NULL;
   char *procid = 0;
-  char channel[64] = {"\0"};
-  char data[512] = {"\0"};
+  char channel[128] = {"\0"};
+  char data[1024] = {"\0"};
   char *saveptr;
   char *token;
 
@@ -508,31 +489,29 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   make_message( &buffer, fmt, ap );
   va_end ( ap );
 
-  data[0] = '\"';
-
   // ^11553_1 ([^ ]*) +(AIRCRAFTS.*)
   // or
   // ^1 AIRCRAFT_DATA "something"
   procid = strtok_r( buffer.data, " ", &saveptr );
   procname = strtok_r( NULL, " ", &saveptr );
   msgname = strtok_r( NULL, " ", &saveptr );
-  if ( ! isdigit( procname[0] ) ) {
-     strcat( data, msgname );
-     strcat( data, " " );
+  if ( isupper( procname[0] ) ) {
+     strcpy( data, msgname );
      msgname = procname;
      procname = procid;
   }
 
   while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
+     if ( data[0] != 0 ) {
+         strcat( data, " " );
+     }
      strcat( data, token );
-     strcat( data, " " );
   }
 
   sprintf( channel, "%s.%s", msgname, procname );
-  strcat( data, "\"" );
 
   // GT: Send msg
-  redisAsyncCommand(pub_ac, onPublish, NULL, "PUBLISH %s %s", channel, data );
+  redisAsyncCommand(pub_ac, onPublish, NULL, "PUBLISH %s \"%s\"", channel, data );
 
   return match_count;
 }

@@ -94,8 +94,8 @@ IvyClientPtr IvyGetApplication( char *name );
 char *IvyGetApplicationList(const char *sep);
 char **IvyGetApplicationMessages( IvyClientPtr app); /* demande de reception d'un message */
 
-MsgRcvPtr IvyBindMsg( MsgCallback callback, void *user_data, const char *fmt_regexp, ... )
-__attribute__((format(printf,3,4))) ; /* avec sprintf prealable */
+MsgRcvPtr IvyBindMsg( const char *srcFilter, MsgCallback callback, void *user_data, const char *fmt_regexp, ... )
+__attribute__((format(printf,4,5))) ; /* avec sprintf prealable */
 
 MsgRcvPtr IvyChangeMsg (MsgRcvPtr msg, const char *fmt_regex, ... )
 __attribute__((format(printf,2,3))); /* avec sprintf prealable */
