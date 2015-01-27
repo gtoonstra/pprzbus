@@ -74,7 +74,8 @@ static void *AfterSelectData = NULL;
 WSADATA WsaData;
 #endif
 
-redisAsyncContext *ac;
+redisAsyncContext *sub_ac;
+redisAsyncContext *pub_ac;
 
 void
 IvyChannelRemove (Channel channel)

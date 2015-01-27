@@ -46,6 +46,9 @@
 #include "pprzbuschannel.h"
 #include "pprzbusxtloop.h"
 
+redisAsyncContext *sub_ac;
+redisAsyncContext *pub_ac;
+
 struct _channel {
 	XtInputId id_read;
 	XtInputId id_write;

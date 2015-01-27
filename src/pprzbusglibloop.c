@@ -34,7 +34,8 @@
 #include "pprzbuschannel.h"
 #include "pprzbusglibloop.h"
 
-redisAsyncContext *ac;
+redisAsyncContext *sub_ac;
+redisAsyncContext *pub_ac;
 
 struct _channel {
 	guint id_read;
@@ -91,14 +92,23 @@ void IvyChannelInit(void) {
 
     GMainContext *context = NULL;
     GSource *source;
-    ac = redisAsyncConnect("127.0.0.1", 6379);
-    if (ac->err) {
-        g_printerr("%s\n", ac->errstr);
+    sub_ac = redisAsyncConnect("127.0.0.1", 6379);
+    if (sub_ac->err) {
+        g_printerr("%s\n", sub_ac->errstr);
     }
-    source = redis_source_new(ac);
+    source = redis_source_new(sub_ac);
     g_source_attach(source, context);
-    redisAsyncSetConnectCallback(ac, connect_cb);
-    redisAsyncSetDisconnectCallback(ac, disconnect_cb);
+    redisAsyncSetConnectCallback(sub_ac, connect_cb);
+    redisAsyncSetDisconnectCallback(sub_ac, disconnect_cb);
+
+    pub_ac = redisAsyncConnect("127.0.0.1", 6379);
+    if (pub_ac->err) {
+        g_printerr("%s\n", pub_ac->errstr);
+    }
+    source = redis_source_new(pub_ac);
+    g_source_attach(source, context);
+    redisAsyncSetConnectCallback(pub_ac, connect_cb);
+    redisAsyncSetDisconnectCallback(pub_ac, disconnect_cb);
 }
 
 
@@ -181,6 +191,7 @@ void
 IvyChannelStop ()
 {
   /* To be implemented */
-    redisAsyncFree( ac );
+    redisAsyncFree( sub_ac );
+    redisAsyncFree( pub_ac );
 }
 

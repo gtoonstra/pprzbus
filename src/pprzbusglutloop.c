@@ -43,6 +43,9 @@
 #include "ivychannel.h"
 #include "ivyglutloop.h"
 
+redisAsyncContext *sub_ac;
+redisAsyncContext *pub_ac;
+
 struct _channel {
 	GLUTInputId id_read;
 	GLUTInputId id_delete;

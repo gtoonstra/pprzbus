@@ -27,6 +27,9 @@
 
 #include <tcl.h>
 
+#include <hiredis/hiredis.h>
+#include <hiredis/async.h>
+
 #include "pprzbustcl.h"
 #include "pprzbuschannel.h"
 #include "pprzbus.h"
@@ -37,6 +40,9 @@
 /* On utilisa la boucle Standard TCL  */
 /* mais il y a des problemes sur les socket server  */
 /* Il n'y a pas de Tcl_MakeTCPserver */
+
+redisAsyncContext *sub_ac;
+redisAsyncContext *pub_ac;
 
 struct _channel {
 	IVY_HANDLE fd;

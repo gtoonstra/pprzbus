@@ -158,11 +158,36 @@ static IvyPongCallback application_pong_callback = NULL;
 /* liste des messages a recevoir */
 static MsgRcvPtr msg_recv = NULL;
 
-extern redisAsyncContext *ac;
+extern redisAsyncContext *sub_ac;
+extern redisAsyncContext *pub_ac;
 
 static const char *ready_message = NULL;
 
 #define MAXPORT(a,b)      ((a>b) ? a : b)
+
+static int extract_capitals( const char *data, char *token ) 
+{
+    int i;
+    int count = 0;
+    int numseenbrackets = 0;
+
+    for ( i = 0; i < strlen(data); i++ ) {
+        if ( data[ i ] == '(' || data[ i ] == ')' ) {
+            if ( count > 0 ) {
+                numseenbrackets = -1;
+            } else {
+                numseenbrackets++;
+            }
+        }
+        if ( (( isupper( data[ i ] )) || (data[i] == '_')) && (numseenbrackets > 1) ) {
+            token[count] = data[i];
+            count++;
+        }
+    }
+    token[count] = '*';
+    count++;
+    return count;
+}
 
 void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
     redisReply *r = reply;
@@ -182,6 +207,12 @@ void onPublish(redisAsyncContext *c, void *reply, void *privdata) {
     int j;
 
     if (reply == NULL) return;
+
+    if (r->type == REDIS_REPLY_ARRAY) {
+        for (j = 0; j < r->elements; j++) {
+            printf("%u) %s\n", j, r->element[j]->str);
+        }
+    }
 }
 
 void IvyInit (const char *appname, const char *ready, 
@@ -318,7 +349,7 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 	va_list ap;
 	static int recv_id = 0;
 	MsgRcvPtr msg;
-    char *token, *saveptr;
+    char token[1024] = {"\0"};
 
 	va_start (ap, fmt_regex );
 	buffer.offset = 0;
@@ -335,13 +366,13 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 
     printf( "buffer.data = %s\n", buffer.data );
 
-    token = strtok_r(buffer.data, " ", &saveptr);
-    token = strtok_r(NULL, " ", &saveptr);
-    if ( token != NULL ) {
+    // ^([0-9]+\.[0-9]+ )?([^ ]*) +(NEW_AIRCRAFT( .*|$))
+    int count = extract_capitals( buffer.data, token );
+    if ( count > 0 ) {
         printf( "Subscribing to %s\n", token );
 
         // GT: bind msg.    
-        redisAsyncCommand(ac, onMessage, callback, "SUBSCRIBE %s", token );
+        redisAsyncCommand(sub_ac, onMessage, callback, "SUBSCRIBE %s", token );
     }
 
 	return msg;
@@ -374,20 +405,45 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 {
   int match_count = 0;
 
- static IvyBuffer buffer = { NULL, 0, 0}; /* Use static mem to eliminate multiple call to malloc /free */
+  static IvyBuffer buffer = { NULL, 0, 0}; /* Use static mem to eliminate multiple call to malloc /free */
   va_list ap;
-  
+  char *procname = NULL;
+  char *msgname = NULL;
+  char *procid = 0;
+  char channel[64] = {"\0"};
+  char data[255] = {"\0"};
+  char *saveptr;
+  char *token;
+
   /* construction du buffer message à partir du format et des arguments */
   if( fmt == 0 || strlen(fmt) == 0 ) return 0;	
+
   va_start( ap, fmt );
   buffer.offset = 0;
   make_message( &buffer, fmt, ap );
   va_end ( ap );
 
-  printf( "PUBLISHing buffer.data = %s\n", buffer.data );
+  data[0] = '\"';
+
+  procname = strtok_r( buffer.data, " ", &saveptr );
+  procid = strtok_r( NULL, " ", &saveptr );
+  msgname = strtok_r( NULL, " ", &saveptr );
+  if ( ! isdigit( procid[0] ) ) {
+     strcat( data, msgname );
+     strcat( data, " " );
+     msgname = procid;
+  }
+
+  while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
+     strcat( data, msgname );
+     strcat( data, " " );
+  }
+
+  sprintf( channel, "%s.%s", msgname, procname );
+  strcat( data, "\"" );
 
   // GT: Send msg
-  redisAsyncCommand(ac, onPublish, NULL, "PUBLISH %s", buffer.data );
+  redisAsyncCommand(pub_ac, onPublish, NULL, "PUBLISH %s %s", channel, data );
 
   return match_count;
 }
