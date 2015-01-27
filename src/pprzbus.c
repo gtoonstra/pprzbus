@@ -67,6 +67,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #endif
 
 #define IVY_DEFAULT_BUS 2010
+#define MAX_MATCHING_ARGS 120
 
 /* stringification et concatenation du domaine et du port en 2 temps :
  * Obligatoire puisque la substitution de domain, et de bus n'est pas
@@ -102,6 +103,7 @@ struct _msg_rcv {			/* requete d'emission d'un client */
 	char *regexp;		/* regexp du message a recevoir */
 	MsgCallback callback;		/* callback a declancher a la reception */
 	void *user_data;		/* stokage d'info client */
+    int secondfield;
 };
 
 
@@ -189,15 +191,84 @@ static int extract_capitals( const char *data, char *token )
     return count;
 }
 
+static char *trimwhitespace(char *str)
+{
+  char *end;
+
+  // Trim leading space
+  while(isspace(*str)) str++;
+
+  if(*str == 0)  // All spaces?
+    return str;
+
+  // Trim trailing space
+  end = str + strlen(str) - 1;
+  while(end > str && isspace(*end)) end--;
+
+  // Write new null terminator
+  *(end+1) = 0;
+
+  return str;
+}
+
 void onMessage(redisAsyncContext *c, void *reply, void *privdata) {
     redisReply *r = reply;
     int j;
+	int argc = 0;
+	char *argv[MAX_MATCHING_ARGS];
+    char channel[64] = {"\0"};
+    char *procname, *msgname;
+    char *saveptr;
+    char *token;
+    char data[512] = {"\0"};
 
     if (reply == NULL) return;
 
+    if ( strcasecmp( r->element[0]->str, "PSUBSCRIBE" ) == 0 ) {
+        // don't bubble up the psubscribe reply
+        return;
+    }
+
     if (r->type == REDIS_REPLY_ARRAY) {
-        for (j = 0; j < r->elements; j++) {
-            printf("%u) %s\n", j, r->element[j]->str);
+        // 0 = pmessage
+        // 1 = subscribed channel name (AIRCRAFTS*)
+        // 2 = actual msg name
+        // 3 = data        
+        strcpy( channel, r->element[2]->str );
+        msgname = strtok_r( channel, ".", &saveptr );
+        procname = strtok_r( NULL, ".", &saveptr );
+
+        // ivy wants procname (or id), then msgname and sometimes something in between
+        argv[argc++] = procname;
+        argv[argc++] = procname;
+
+        strcpy( data, msgname );
+        strcat( data, " " );
+        strcat( data, r->element[3]->str+1);
+        data[strlen(data) - 1 ] = '\0';
+        trimwhitespace( data );
+
+        /*        
+        saveptr = NULL;
+        token = strtok_r( data, " ", &saveptr );
+        if ( token != NULL ) {
+            argv[argc++] = token;
+            while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
+                argv[argc++] = token;
+            }
+        }
+        */
+
+        if ( privdata ) {
+            MsgRcvPtr msg = (MsgRcvPtr)privdata;
+            if ( msg->secondfield == 1 ) {
+                argv[argc++] = data;
+            } else {
+                argv[argc++] = data;
+            }
+            // printf( "Returning '%s' for message '%s'\n", argv[argc-1], msgname );
+
+            (*msg->callback)( NULL, msg->user_data, argc, argv ) ;
         }
     }
 }
@@ -208,11 +279,14 @@ void onPublish(redisAsyncContext *c, void *reply, void *privdata) {
 
     if (reply == NULL) return;
 
+    // assume all went well...
+/*
     if (r->type == REDIS_REPLY_ARRAY) {
         for (j = 0; j < r->elements; j++) {
             printf("%u) %s\n", j, r->element[j]->str);
         }
     }
+*/
 }
 
 void IvyInit (const char *appname, const char *ready, 
@@ -222,6 +296,9 @@ void IvyInit (const char *appname, const char *ready,
 {
 	if ( appname )
 		ApplicationName = strdup(appname);
+
+    printf("I'm called %s\n", ApplicationName );
+
 	application_callback = callback;
 	application_user_data = data;
 	application_die_callback = die_callback;
@@ -362,6 +439,14 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 		msg->regexp = strdup(buffer.data);
 		msg->callback = callback;
 		msg->user_data = user_data;
+
+        if ( strstr( buffer.data, ")?([^ ]*) " ) != NULL ) {
+            // values at 2nd field
+            msg->secondfield = 1;
+        } else {
+            msg->secondfield = 0;
+        }
+
 	IVY_LIST_ADD_END( msg_recv, msg )
 
     printf( "buffer.data = %s\n", buffer.data );
@@ -369,10 +454,10 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
     // ^([0-9]+\.[0-9]+ )?([^ ]*) +(NEW_AIRCRAFT( .*|$))
     int count = extract_capitals( buffer.data, token );
     if ( count > 0 ) {
-        printf( "Subscribing to %s\n", token );
+        printf( "Pattern subscribing to %s\n", token );
 
         // GT: bind msg.    
-        redisAsyncCommand(sub_ac, onMessage, callback, "SUBSCRIBE %s", token );
+        redisAsyncCommand(sub_ac, onMessage, msg, "PSUBSCRIBE %s", token );
     }
 
 	return msg;
@@ -411,7 +496,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   char *msgname = NULL;
   char *procid = 0;
   char channel[64] = {"\0"};
-  char data[255] = {"\0"};
+  char data[512] = {"\0"};
   char *saveptr;
   char *token;
 
@@ -425,17 +510,21 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 
   data[0] = '\"';
 
-  procname = strtok_r( buffer.data, " ", &saveptr );
-  procid = strtok_r( NULL, " ", &saveptr );
+  // ^11553_1 ([^ ]*) +(AIRCRAFTS.*)
+  // or
+  // ^1 AIRCRAFT_DATA "something"
+  procid = strtok_r( buffer.data, " ", &saveptr );
+  procname = strtok_r( NULL, " ", &saveptr );
   msgname = strtok_r( NULL, " ", &saveptr );
-  if ( ! isdigit( procid[0] ) ) {
+  if ( ! isdigit( procname[0] ) ) {
      strcat( data, msgname );
      strcat( data, " " );
-     msgname = procid;
+     msgname = procname;
+     procname = procid;
   }
 
   while (( token = strtok_r( NULL, " ", &saveptr ) ) != NULL ) {
-     strcat( data, msgname );
+     strcat( data, token );
      strcat( data, " " );
   }
 
